@@ -60,8 +60,6 @@ function openSocket(): void {
       project_id: config.projectId,
       machine_name: config.machineName,
     });
-
-    startHeartbeat();
   });
 
   ws.on('message', (data: WebSocket.Data) => {
@@ -75,6 +73,10 @@ function openSocket(): void {
 
     if (msg.type === 'error') {
       console.error(`[ws] server error: ${msg.error}`);
+    }
+
+    if (msg.type === 'registered') {
+      startHeartbeat();
     }
 
     for (const handler of messageHandlers) {

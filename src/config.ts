@@ -3,12 +3,13 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
-export interface Config {
+interface Config {
   backendUrl: string;
   machineName: string;
   projectId: string;
   agentId: string;
   apiKey: string;
+  dangerouslySkipPermissions: boolean;
 }
 
 interface GlobalConfig {
@@ -72,7 +73,7 @@ export function findLocalConfigPath(): string | null {
   }
 }
 
-export function loadConfig(): Config {
+function loadConfig(): Config {
   const global = readGlobalConfig();
   const local = readLocalConfig();
 
@@ -98,17 +99,18 @@ export function loadConfig(): Config {
     process.exit(1);
   }
 
-  return { backendUrl, machineName, projectId, agentId, apiKey };
+  const dangerouslySkipPermissions = process.argv.includes('--dangerously-skip-permissions');
+
+  return { backendUrl, machineName, projectId, agentId, apiKey, dangerouslySkipPermissions };
 }
 
 // Lazy singleton — only validated when first accessed (not during --setup)
 let _config: Config | null = null;
-export function getConfig(): Config {
+function getConfig(): Config {
   if (!_config) _config = loadConfig();
   return _config;
 }
 
-// Keep for backwards compat — but guard against eager evaluation during --setup
 export const config: Config = new Proxy({} as Config, {
   get(_, prop) {
     return getConfig()[prop as keyof Config];
