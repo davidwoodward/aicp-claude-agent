@@ -1,7 +1,7 @@
 // Strict WebSocket protocol types — matches aicp-app backend contract
 
 export type AgentStatus = 'idle' | 'busy' | 'offline';
-export type MessageRole = 'user' | 'claude';
+type MessageRole = 'user' | 'assistant' | 'result';
 
 // ─── Agent → Backend ────────────────────────────────────────────────
 
@@ -33,7 +33,15 @@ export interface ExecutionCompleteMessage {
   type: 'execution_complete';
   prompt_id: string;
   session_id: string;
-  token_usage?: { input_tokens?: number; output_tokens?: number };
+  token_usage?: { input_tokens: number; output_tokens: number };
+  cost_usd?: number;
+  num_turns?: number;
+  duration_ms?: number;
+}
+
+export interface LocalPromptMessage {
+  type: 'local_prompt';
+  text: string;
 }
 
 export type AgentToBackendMessage =
@@ -41,7 +49,8 @@ export type AgentToBackendMessage =
   | HeartbeatMessage
   | StatusMessage
   | MessageMessage
-  | ExecutionCompleteMessage;
+  | ExecutionCompleteMessage
+  | LocalPromptMessage;
 
 // ─── Backend → Agent ────────────────────────────────────────────────
 
@@ -57,6 +66,7 @@ export interface HeartbeatAckMessage {
 export interface ExecutePromptMessage {
   type: 'execute_prompt';
   prompt_id: string;
+  session_id: string;
   text: string;
 }
 
