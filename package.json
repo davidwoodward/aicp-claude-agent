@@ -16,8 +16,8 @@
   },
   "private": true,
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.71",
     "dotenv": "^16.4.7",
-    "node-pty": "^1.0.0",
     "uuid": "^11.1.0",
     "ws": "^8.18.0"
   },
