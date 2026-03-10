@@ -51,7 +51,6 @@ function openSocket(): void {
   ws = new WebSocket(wsUrl.toString());
 
   ws.on('open', () => {
-    console.log(`[ws] connected to ${config.backendUrl}`);
     reconnectDelay = INITIAL_RECONNECT_DELAY;
 
     send({
