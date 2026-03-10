@@ -1,8 +1,10 @@
-import readline from 'readline';
 import { config } from './config';
-import { executePrompt, ExecutionStats } from './claude/sdk';
+import { executePrompt, ExecutionStats, ContextInfo } from './claude/sdk';
 import { connect, disconnect, sendMessage, onMessage } from './websocket/client';
 import { AgentStatus, BackendToAgentMessage, ExecutePromptMessage } from './types/protocol';
+import { printBanner, printStatus, printInfo, printError, printDivider, printUserMessage, createPrompt, StyledRL } from './terminal/prompt';
+import { startSpinner, stopSpinner, updateSpinnerVerb, clearThinkingVerb, updateSpinnerTokens, isSpinnerActive } from './terminal/spinner';
+import { dispatch } from './commands';
 
 // ─── Execution state ────────────────────────────────────────────────
 
@@ -10,8 +12,10 @@ let agentStatus: AgentStatus = 'idle';
 let executing = false;
 let currentPromptId: string | null = null;
 let currentSessionId: string | null = null;
+let resumeSessionId: string | undefined;
 let shuttingDown = false;
-let rl: readline.Interface | null = null;
+let styledRL: StyledRL | null = null;
+let lastContextInfo: ContextInfo | null = null;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -20,9 +24,25 @@ function setStatus(status: AgentStatus): void {
   sendMessage({ type: 'status', status });
 }
 
+function contextSuffix(): string {
+  if (lastContextInfo && lastContextInfo.contextWindow > 0) {
+    const pct = Math.round((lastContextInfo.inputTokens / lastContextInfo.contextWindow) * 100);
+    return `  ·  ${pct}% context`;
+  }
+  return '';
+}
+
+function statusText(): string {
+  if (executing) {
+    return `esc to interrupt${contextSuffix()}`;
+  }
+  return `⏵⏵ bypass permissions on${contextSuffix()}`;
+}
+
 function showPrompt(): void {
-  if (rl && !executing) {
-    rl.prompt();
+  if (styledRL && !executing) {
+    styledRL.updateStatus(statusText());
+    styledRL.prompt();
   }
 }
 
@@ -34,13 +54,11 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
   executing = true;
 
   setStatus('busy');
+  if (styledRL) styledRL.setStatus('esc to interrupt');
 
-  // (a) Show the prompt being executed
-  console.log(`\n${'─'.repeat(60)}`);
-  console.log(msg.text);
-  console.log(`${'─'.repeat(60)}\n`);
+  // Show formatted user message
+  printUserMessage(msg.text);
 
-  // Send user message to backend
   sendMessage({
     type: 'message',
     session_id: msg.session_id,
@@ -51,15 +69,45 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
 
   let stats: ExecutionStats | undefined;
 
+  // Start spinner before entering execution loop
+  startSpinner();
+
   try {
     for await (const execMsg of executePrompt(msg.text, {
       cwd: process.cwd(),
-      // (b) Stream real-time output to terminal
-      onProgress: (text) => process.stdout.write(text),
+      resumeSessionId,
+      onProgress: (text) => {
+        // Stop spinner before writing assistant text
+        stopSpinner();
+        process.stdout.write(text);
+      },
+      onContextUpdate: (info) => {
+        if (info.contextWindow > 0) {
+          lastContextInfo = info;
+        } else if (lastContextInfo) {
+          lastContextInfo = { ...lastContextInfo, inputTokens: info.inputTokens };
+        }
+        // Update spinner with token info
+        if (lastContextInfo && lastContextInfo.contextWindow > 0) {
+          const pct = Math.round((lastContextInfo.inputTokens / lastContextInfo.contextWindow) * 100);
+          updateSpinnerTokens(lastContextInfo.inputTokens, pct);
+        }
+      },
+      onToolEvent: (event) => {
+        if (event.type === 'tool_start') {
+          // Restart spinner with tool verb
+          if (!isSpinnerActive()) startSpinner();
+          updateSpinnerVerb(event.toolName);
+        } else if (event.type === 'tool_end') {
+          // Revert to "Thinking" after tool completes
+          clearThinkingVerb();
+        } else if (event.type === 'tool_progress') {
+          updateSpinnerVerb(event.toolName);
+        }
+      },
     })) {
       if (!currentSessionId) break;
 
-      // Send clean messages to backend
       sendMessage({
         type: 'message',
         session_id: currentSessionId,
@@ -73,10 +121,12 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('\n[agent] execution error:', err);
+    printError(`execution error: ${err}`);
   }
 
-  // Send completion
+  // Ensure spinner is stopped
+  stopSpinner();
+
   if (currentPromptId && currentSessionId) {
     sendMessage({
       type: 'execution_complete',
@@ -93,19 +143,21 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
       }),
     });
 
-    // Show stats summary
     if (stats) {
-      console.log(`\n[stats] ${stats.num_turns} turns | ${stats.input_tokens + stats.output_tokens} tokens | $${stats.cost_usd.toFixed(4)} | ${(stats.duration_ms / 1000).toFixed(1)}s`);
+      console.log();
+      printStatus(`${stats.num_turns} turns | ${stats.input_tokens + stats.output_tokens} tokens | $${stats.cost_usd.toFixed(4)} | ${(stats.duration_ms / 1000).toFixed(1)}s`);
     }
   }
 
-  setStatus('idle');
+  // Clear resume after first execution — subsequent prompts start fresh
+  resumeSessionId = undefined;
 
+  setStatus('idle');
   executing = false;
   currentPromptId = null;
   currentSessionId = null;
 
-  // Re-show stdin prompt
+  console.log();
   showPrompt();
 }
 
@@ -113,6 +165,8 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
 
 onMessage((msg: BackendToAgentMessage) => {
   if (msg.type === 'registered') {
+    printInfo(`connected: ${config.backendUrl}`);
+    console.log();
     setStatus('idle');
     showPrompt();
     return;
@@ -121,42 +175,71 @@ onMessage((msg: BackendToAgentMessage) => {
   if (msg.type !== 'execute_prompt') return;
 
   if (executing) {
-    console.log(`[agent] ignoring execute_prompt (already executing ${currentPromptId})`);
+    printInfo(`ignoring execute_prompt (already executing ${currentPromptId})`);
     return;
   }
 
   handleExecutePrompt(msg).catch(err => {
-    console.error('[agent] unhandled execution error:', err);
+    printError(`unhandled execution error: ${err}`);
   });
 });
 
-// ─── Stdin input (c) ───────────────────────────────────────────────
+// ─── Stdin input ────────────────────────────────────────────────────
 
 function startStdinInput(): void {
-  rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: '> ',
-  });
+  // SDK always runs with bypass permissions
+  styledRL = createPrompt({ statusLine: '⏵⏵ bypass permissions on' });
 
-  rl.on('line', (line) => {
-    const text = line.trim();
+  styledRL.onSubmit(async (input) => {
+    const text = input.trim();
     if (!text) {
       showPrompt();
       return;
     }
 
     if (executing) {
-      console.log('[agent] execution in progress, please wait');
+      printInfo('execution in progress, please wait');
       showPrompt();
       return;
     }
 
-    // Send to backend — it will create prompt+session and send back execute_prompt
+    // Check for slash commands
+    if (text.startsWith('/')) {
+      const result = await dispatch(text, styledRL!.rl);
+      if (result.resumeSessionId) {
+        resumeSessionId = result.resumeSessionId;
+        printStatus(`Session loaded — next prompt will resume it`);
+      }
+      if (result.handled) {
+        console.log();
+        showPrompt();
+        return;
+      }
+    }
+
+    // Regular text — send to backend
     sendMessage({ type: 'local_prompt', text });
   });
 
-  rl.on('close', () => {
+  // Double Ctrl-C to exit (like Claude Code)
+  let lastCtrlC = 0;
+  styledRL.onSigint(() => {
+    const now = Date.now();
+    if (now - lastCtrlC < 1500) {
+      shutdown(0);
+      return;
+    }
+    lastCtrlC = now;
+    // Show hint in the status area — no scrolling
+    styledRL!.setStatus('Press Ctrl+C again to exit');
+    setTimeout(() => {
+      if (styledRL && Date.now() - lastCtrlC >= 1400) {
+        styledRL.setStatus(statusText());
+      }
+    }, 1500);
+  });
+
+  styledRL.onClose(() => {
     if (!shuttingDown) shutdown(0);
   });
 }
@@ -167,25 +250,61 @@ function shutdown(exitCode = 0): void {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  console.log('\n[agent] shutting down...');
+  stopSpinner();
+  console.log();
+  printInfo('shutting down...');
 
-  if (rl) {
-    rl.close();
-    rl = null;
+  if (styledRL) {
+    styledRL.close();
+    styledRL = null;
   }
 
+  // Restore terminal state before exit
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode?.(false);
+  }
+  process.stdin.pause();
+
   disconnect();
-  console.log('[agent] stopped');
   process.exit(exitCode);
 }
 
-process.on('SIGINT', () => shutdown(0));
+// SIGTERM from kill — immediate shutdown (no double-press needed)
 process.on('SIGTERM', () => shutdown(0));
+
+// ─── Project name fetch ─────────────────────────────────────────────
+
+async function fetchProjectName(): Promise<string | null> {
+  try {
+    // Derive HTTP base URL from WebSocket URL (ws://host/ws → http://host)
+    const wsUrl = new URL(config.backendUrl);
+    const httpProto = wsUrl.protocol === 'wss:' ? 'https:' : 'http:';
+    const baseUrl = `${httpProto}//${wsUrl.host}`;
+
+    const res = await fetch(`${baseUrl}/projects/${config.projectId}`, {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    });
+    if (!res.ok) return null;
+    const project = await res.json() as { name?: string };
+    return project.name || null;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Start ──────────────────────────────────────────────────────────
 
-export function start(): void {
-  console.log(`[agent] starting agent=${config.agentId} project=${config.projectId} machine=${config.machineName}`);
+export async function start(): Promise<void> {
+  printBanner();
+
+  const projectName = await fetchProjectName();
+  if (projectName) {
+    printInfo(`project: ${projectName} (${config.projectId})`);
+  } else {
+    printInfo(`project: ${config.projectId}`);
+  }
+  printInfo(`machine: ${config.machineName}`);
+
   connect();
   startStdinInput();
 }
