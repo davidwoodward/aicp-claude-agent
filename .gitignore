@@ -4,3 +4,4 @@ dist/
 !.env.example
 *.tsbuildinfo
 .aicp.json
+.aicp/

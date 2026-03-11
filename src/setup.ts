@@ -146,7 +146,7 @@ export async function runSetup(): Promise<void> {
   const selected = projects[index];
   writeLocalConfig({ project_id: selected.id });
 
-  const localPath = findLocalConfigPath() || `${process.cwd()}/.aicp.json`;
+  const localPath = findLocalConfigPath() || `${process.cwd()}/.aicp/aicp.json`;
   console.log(`\n  Project "${selected.name}" saved to ${localPath}`);
   console.log('\n  Setup complete. Run aicp-agent to start.\n');
 
