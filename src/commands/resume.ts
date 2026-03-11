@@ -1,6 +1,5 @@
-import readline from 'readline';
 import { listRecentSessions, SDKSessionInfo } from '../claude/sdk';
-import { printStatus, printInfo, printError, printDivider } from '../terminal/prompt';
+import { printStatus, printInfo, printError, printDivider, writeAbove } from '../terminal/prompt';
 
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
@@ -25,7 +24,11 @@ function truncate(str: string, max: number): string {
   return str.slice(0, max - 1) + '…';
 }
 
-export async function resumeCommand(rl: readline.Interface): Promise<string | null> {
+interface Questionable {
+  question(prompt: string, cb: (answer: string) => void): void;
+}
+
+export async function resumeCommand(rl: Questionable): Promise<string | null> {
   printInfo('Loading sessions...');
 
   let sessions: SDKSessionInfo[];
@@ -43,7 +46,7 @@ export async function resumeCommand(rl: readline.Interface): Promise<string | nu
 
   printDivider();
   printStatus('Recent Sessions');
-  console.log();
+  writeAbove('');
 
   for (let i = 0; i < sessions.length; i++) {
     const s = sessions[i];
@@ -51,10 +54,10 @@ export async function resumeCommand(rl: readline.Interface): Promise<string | nu
     const title = truncate(s.summary || s.firstPrompt || '(untitled)', 50);
     const time = `${DIM}${GRAY}${timeAgo(s.lastModified)}${RESET}`;
     const branch = s.gitBranch ? `${DIM}${CYAN}[${s.gitBranch}]${RESET}` : '';
-    console.log(`${num} ${title}  ${time} ${branch}`);
+    writeAbove(`${num} ${title}  ${time} ${branch}`);
   }
 
-  console.log();
+  writeAbove('');
 
   return new Promise((resolve) => {
     rl.question(`${DIM}${GRAY}  Pick session (1-${sessions.length}) or Enter to cancel: ${RESET}`, (answer) => {

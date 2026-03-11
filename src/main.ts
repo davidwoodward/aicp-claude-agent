@@ -2,7 +2,7 @@ import { config } from './config';
 import { executePrompt, ExecutionStats, ContextInfo } from './claude/sdk';
 import { connect, disconnect, sendMessage, onMessage } from './websocket/client';
 import { AgentStatus, BackendToAgentMessage, ExecutePromptMessage } from './types/protocol';
-import { printBanner, printStatus, printInfo, printError, printDivider, printUserMessage, createPrompt, StyledRL } from './terminal/prompt';
+import { printBanner, printStatus, printInfo, printError, createPrompt, writeAbove, updateAbove, wrapText, StyledRL } from './terminal/prompt';
 import { startSpinner, stopSpinner, updateSpinnerVerb, clearThinkingVerb, updateSpinnerTokens, isSpinnerActive } from './terminal/spinner';
 import { dispatch } from './commands';
 
@@ -16,6 +16,8 @@ let resumeSessionId: string | undefined;
 let shuttingDown = false;
 let styledRL: StyledRL | null = null;
 let lastContextInfo: ContextInfo | null = null;
+let progressBuffer = '';       // buffers partial lines from streaming output
+let progressLineActive = false; // true when a partial line is showing via updateAbove
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -39,11 +41,8 @@ function statusText(): string {
   return `⏵⏵ bypass permissions on${contextSuffix()}`;
 }
 
-function showPrompt(): void {
-  if (styledRL && !executing) {
-    styledRL.updateStatus(statusText());
-    styledRL.prompt();
-  }
+function syncStatusBar(): void {
+  if (styledRL) styledRL.setStatus(statusText());
 }
 
 // ─── Execution handler ─────────────────────────────────────────────
@@ -56,8 +55,11 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
   setStatus('busy');
   if (styledRL) styledRL.setStatus('esc to interrupt');
 
-  // Show formatted user message
-  printUserMessage(msg.text);
+  // Echo user message as plain text in scrollback (always full expanded text)
+  for (const ln of msg.text.split('\n')) {
+    writeAbove(ln);
+  }
+  writeAbove('');
 
   sendMessage({
     type: 'message',
@@ -79,7 +81,35 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
       onProgress: (text) => {
         // Stop spinner before writing assistant text
         stopSpinner();
-        process.stdout.write(text);
+        // Buffer streaming text, flush complete lines via writeAbove,
+        // show partial lines via updateAbove for real-time feedback
+        const parts = text.split('\n');
+        for (let i = 0; i < parts.length; i++) {
+          progressBuffer += parts[i];
+          if (i < parts.length - 1) {
+            // Got a complete line — finalize it in scrollback
+            if (progressLineActive) {
+              // Line already exists in scrollback from writeAbove — overwrite with final content
+              // If it needs wrapping, flush wrapped continuation lines after
+              const wrapped = wrapText(progressBuffer);
+              updateAbove(wrapped[0]);
+              for (let w = 1; w < wrapped.length; w++) writeAbove(wrapped[w]);
+              progressLineActive = false;
+            } else {
+              writeAbove(progressBuffer);
+            }
+            progressBuffer = '';
+          }
+        }
+        // Show partial line in-place so user sees streaming text
+        if (progressBuffer) {
+          if (!progressLineActive) {
+            writeAbove(progressBuffer);
+            progressLineActive = true;
+          } else {
+            updateAbove(progressBuffer);
+          }
+        }
       },
       onContextUpdate: (info) => {
         if (info.contextWindow > 0) {
@@ -95,6 +125,18 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
       },
       onToolEvent: (event) => {
         if (event.type === 'tool_start') {
+          // Flush any partial progress line before spinner takes over (wrap long lines)
+          if (progressBuffer) {
+            if (progressLineActive) {
+              const wrapped = wrapText(progressBuffer);
+              updateAbove(wrapped[0]);
+              for (let w = 1; w < wrapped.length; w++) writeAbove(wrapped[w]);
+            } else {
+              writeAbove(progressBuffer);
+            }
+            progressBuffer = '';
+            progressLineActive = false;
+          }
           // Restart spinner with tool verb
           if (!isSpinnerActive()) startSpinner();
           updateSpinnerVerb(event.toolName);
@@ -127,6 +169,19 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
   // Ensure spinner is stopped
   stopSpinner();
 
+  // Flush any remaining partial line from streaming output (wrap long lines)
+  if (progressBuffer) {
+    if (progressLineActive) {
+      const wrapped = wrapText(progressBuffer);
+      updateAbove(wrapped[0]);
+      for (let w = 1; w < wrapped.length; w++) writeAbove(wrapped[w]);
+    } else {
+      writeAbove(progressBuffer);
+    }
+    progressBuffer = '';
+    progressLineActive = false;
+  }
+
   if (currentPromptId && currentSessionId) {
     sendMessage({
       type: 'execution_complete',
@@ -144,7 +199,7 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
     });
 
     if (stats) {
-      console.log();
+      writeAbove('');
       printStatus(`${stats.num_turns} turns | ${stats.input_tokens + stats.output_tokens} tokens | $${stats.cost_usd.toFixed(4)} | ${(stats.duration_ms / 1000).toFixed(1)}s`);
     }
   }
@@ -157,8 +212,8 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
   currentPromptId = null;
   currentSessionId = null;
 
-  console.log();
-  showPrompt();
+  writeAbove('');
+  syncStatusBar();
 }
 
 // ─── WebSocket message handler ──────────────────────────────────────
@@ -166,9 +221,9 @@ async function handleExecutePrompt(msg: ExecutePromptMessage): Promise<void> {
 onMessage((msg: BackendToAgentMessage) => {
   if (msg.type === 'registered') {
     printInfo(`connected: ${config.backendUrl}`);
-    console.log();
+    writeAbove('');
     setStatus('idle');
-    showPrompt();
+    syncStatusBar();
     return;
   }
 
@@ -190,16 +245,24 @@ function startStdinInput(): void {
   // SDK always runs with bypass permissions
   styledRL = createPrompt({ statusLine: '⏵⏵ bypass permissions on' });
 
-  styledRL.onSubmit(async (input) => {
+  // Activate the pinned prompt area at the bottom of the terminal
+  styledRL.prompt();
+
+  styledRL.onSubmit(async (input, _displayInput) => {
     const text = input.trim();
     if (!text) {
-      showPrompt();
+      syncStatusBar();
+      return;
+    }
+
+    if (text === 'exit') {
+      shutdown(0);
       return;
     }
 
     if (executing) {
       printInfo('execution in progress, please wait');
-      showPrompt();
+      syncStatusBar();
       return;
     }
 
@@ -211,8 +274,8 @@ function startStdinInput(): void {
         printStatus(`Session loaded — next prompt will resume it`);
       }
       if (result.handled) {
-        console.log();
-        showPrompt();
+        writeAbove('');
+        syncStatusBar();
         return;
       }
     }
@@ -251,7 +314,7 @@ function shutdown(exitCode = 0): void {
   shuttingDown = true;
 
   stopSpinner();
-  console.log();
+  writeAbove('');
   printInfo('shutting down...');
 
   if (styledRL) {

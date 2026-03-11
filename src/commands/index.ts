@@ -1,6 +1,5 @@
-import readline from 'readline';
 import { resumeCommand } from './resume';
-import { printInfo } from '../terminal/prompt';
+import { printInfo, writeAbove } from '../terminal/prompt';
 
 export interface CommandResult {
   handled: boolean;
@@ -15,11 +14,15 @@ const COMMANDS: Record<string, string> = {
 function helpCommand(): void {
   printInfo('Available commands:');
   for (const [cmd, desc] of Object.entries(COMMANDS)) {
-    console.log(`  \x1b[1m\x1b[37m${cmd.padEnd(12)}\x1b[0m \x1b[2m\x1b[38;5;240m${desc}\x1b[0m`);
+    writeAbove(`  \x1b[1m\x1b[37m${cmd.padEnd(12)}\x1b[0m \x1b[2m\x1b[38;5;240m${desc}\x1b[0m`);
   }
 }
 
-export async function dispatch(input: string, rl: readline.Interface): Promise<CommandResult> {
+interface Questionable {
+  question(prompt: string, cb: (answer: string) => void): void;
+}
+
+export async function dispatch(input: string, rl: Questionable): Promise<CommandResult> {
   const cmd = input.toLowerCase().trim();
 
   if (cmd === '/help') {

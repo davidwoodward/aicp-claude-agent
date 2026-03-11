@@ -51,7 +51,7 @@ npm start            # Run compiled output
 
 1. Environment variables (`.env.local` or shell)
 2. Global config (`~/.aicp/config.json`)
-3. Local config (`.aicp.json` — searched up directory tree)
+3. Local config (`.aicp/aicp.json` — searched up directory tree; legacy `.aicp.json` also supported)
 
 ### Environment Variables
 
@@ -66,7 +66,7 @@ npm start            # Run compiled output
 ### Config Files
 
 - **`~/.aicp/config.json`** — global: `{ backend_url, machine_name, api_key }`
-- **`.aicp.json`** — per-directory: `{ project_id }`
+- **`.aicp/aicp.json`** — per-directory: `{ project_id }` (legacy `.aicp.json` still read)
 
 ## Conventions
 

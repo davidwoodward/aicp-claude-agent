@@ -24,7 +24,9 @@ interface LocalConfig {
 
 const GLOBAL_DIR = path.join(os.homedir(), '.aicp');
 const GLOBAL_PATH = path.join(GLOBAL_DIR, 'config.json');
-const LOCAL_FILENAME = '.aicp.json';
+const LOCAL_DIR = '.aicp';
+const LOCAL_FILENAME = 'aicp.json';
+const LEGACY_LOCAL_FILENAME = '.aicp.json';
 
 // ─── File I/O ───────────────────────────────────────────────────────
 
@@ -59,18 +61,37 @@ export function readLocalConfig(): LocalConfig {
 }
 
 export function writeLocalConfig(data: LocalConfig): void {
-  writeJson(path.join(process.cwd(), LOCAL_FILENAME), data);
+  writeJson(path.join(process.cwd(), LOCAL_DIR, LOCAL_FILENAME), data);
 }
 
 export function findLocalConfigPath(): string | null {
   let dir = process.cwd();
   while (true) {
-    const candidate = path.join(dir, LOCAL_FILENAME);
-    if (fs.existsSync(candidate)) return candidate;
+    // Check new path first: .aicp/aicp.json
+    const newCandidate = path.join(dir, LOCAL_DIR, LOCAL_FILENAME);
+    if (fs.existsSync(newCandidate)) return newCandidate;
+    // Fall back to legacy: .aicp.json
+    const legacyCandidate = path.join(dir, LEGACY_LOCAL_FILENAME);
+    if (fs.existsSync(legacyCandidate)) return legacyCandidate;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/** Returns the .aicp/ directory path for the current project (creates if needed) */
+export function localAicpDir(): string {
+  const configPath = findLocalConfigPath();
+  if (configPath) {
+    // If found at legacy location, use its parent + .aicp/
+    if (configPath.endsWith(LEGACY_LOCAL_FILENAME)) {
+      return path.join(path.dirname(configPath), LOCAL_DIR);
+    }
+    // New layout: .aicp/aicp.json → .aicp/
+    return path.dirname(configPath);
+  }
+  // Default to cwd/.aicp/
+  return path.join(process.cwd(), LOCAL_DIR);
 }
 
 function loadConfig(): Config {
