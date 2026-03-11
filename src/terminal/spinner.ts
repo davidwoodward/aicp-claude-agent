@@ -1,8 +1,14 @@
 // ─── Animated execution spinner ─────────────────────────────────
 //
-// Renders a single updating line during execution:
-//   ⠹ Reading... (3s · ↓ 1.2k tokens)
+// Renders a single updating line in the scrollback region:
+//   ⠹ Reading... (3s · ↓ 1.2k tokens · 42%)
 //
+// First frame: writeAbove() inserts a new line into scrollback.
+// Subsequent frames: updateAbove() overwrites that same line in-place.
+// Stop: clearAbove() removes the spinner line from scrollback.
+//
+
+import { writeAbove, updateAbove, clearAbove } from './prompt';
 
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const FRAME_MS = 80;
@@ -39,7 +45,7 @@ let verb = 'Thinking';
 let startTime = 0;
 let inputTokens = 0;
 let contextPct = 0;
-let lineVisible = false;
+let lineInserted = false; // true after first frame inserts a scrollback line
 
 // ─── Rendering ──────────────────────────────────────────────────
 
@@ -64,8 +70,15 @@ function render(): void {
   }
 
   const line = `${TEAL}${frame}${RESET} ${NEAR_WHITE}${verb}...${RESET} ${DIM_GRAY}(${meta})${RESET}`;
-  process.stdout.write(`\r\x1b[2K${line}`);
-  lineVisible = true;
+
+  if (!lineInserted) {
+    // First frame — insert a new line into scrollback
+    writeAbove(line);
+    lineInserted = true;
+  } else {
+    // Subsequent frames — overwrite the same line in-place
+    updateAbove(line);
+  }
 }
 
 // ─── Public API ─────────────────────────────────────────────────
@@ -77,6 +90,7 @@ export function startSpinner(): void {
   startTime = Date.now();
   inputTokens = 0;
   contextPct = 0;
+  lineInserted = false;
   timer = setInterval(render, FRAME_MS);
   render();
 }
@@ -86,9 +100,9 @@ export function stopSpinner(): void {
     clearInterval(timer);
     timer = null;
   }
-  if (lineVisible) {
-    process.stdout.write('\r\x1b[2K');
-    lineVisible = false;
+  if (lineInserted) {
+    clearAbove();
+    lineInserted = false;
   }
 }
 
